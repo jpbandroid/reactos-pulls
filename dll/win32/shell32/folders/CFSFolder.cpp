@@ -657,9 +657,9 @@ HRESULT SHELL32_GetFSItemAttributes(IShellFolder * psf, LPCITEMIDLIST pidl, LPDW
 
     if (SFGAO_LINK & *pdwAttributes)
     {
-        char ext[MAX_PATH];
+        WCHAR ext[MAX_PATH];
 
-        if (_ILGetExtension(pidl, ext, MAX_PATH) && !lstrcmpiA(ext, "lnk"))
+        if (_ILGetExtension(pidl, ext, _countof(ext)) && !lstrcmpiW(ext, L"lnk"))
             dwShellAttributes |= SFGAO_LINK;
     }
 
@@ -1499,7 +1499,7 @@ HRESULT WINAPI CFSFolder::SetNameOf(
     }
 
     /* build source path */
-    PathCombineW(szSrc, m_sPathTarget, pDataW->wszName);
+    PathCombineW(szSrc, m_sPathTarget, pDataW->wszName); // FIXME: PIDLs without wide string
 
     /* build destination path */
     if (dwFlags == SHGDN_NORMAL || dwFlags & SHGDN_INFOLDER)
@@ -1507,39 +1507,33 @@ HRESULT WINAPI CFSFolder::SetNameOf(
     else
         lstrcpynW(szDest, lpName, MAX_PATH);
 
-    if(!(dwFlags & SHGDN_FORPARSING) && SHELL_FS_HideExtension(szSrc)) {
-        WCHAR *ext = PathFindExtensionW(szSrc);
-        if(*ext != '\0') {
-            INT len = wcslen(szDest);
-            lstrcpynW(szDest + len, ext, MAX_PATH - len);
-        }
+    if (!(dwFlags & SHGDN_FORPARSING) && !bIsFolder && SHELL_FS_HideExtension(szSrc))
+    {
+        LPCWSTR ext = PathFindExtensionW(szSrc);
+        if (*ext)
+            PathAddExtensionW(szDest, ext);
     }
 
+    HRESULT hr = S_OK;
     TRACE ("src=%s dest=%s\n", debugstr_w(szSrc), debugstr_w(szDest));
     if (!wcscmp(szSrc, szDest))
     {
         /* src and destination is the same */
-        HRESULT hr = S_OK;
         if (pPidlOut)
-            hr = _ILCreateFromPathW(szDest, pPidlOut);
-
-        return hr;
+            hr = SHILClone(pidl, pPidlOut);
     }
-
-    if (MoveFileW (szSrc, szDest))
+    else if (MoveFileW(szSrc, szDest))
     {
-        HRESULT hr = S_OK;
-
         if (pPidlOut)
-            hr = _ILCreateFromPathW(szDest, pPidlOut);
+            hr = ParseDisplayName(hwndOwner, NULL, PathFindFileNameW(szDest), NULL, pPidlOut, NULL);
 
-        SHChangeNotify (bIsFolder ? SHCNE_RENAMEFOLDER : SHCNE_RENAMEITEM,
-                        SHCNF_PATHW, szSrc, szDest);
-
-        return hr;
+        SHChangeNotify(bIsFolder ? SHCNE_RENAMEFOLDER : SHCNE_RENAMEITEM, SHCNF_PATHW, szSrc, szDest);
     }
-
-    return E_FAIL;
+    else
+    {
+        hr = HResultFromWin32(GetLastError());
+    }
+    return hr;
 }
 
 HRESULT WINAPI CFSFolder::GetDefaultSearchGUID(GUID * pguid)
@@ -1604,7 +1598,8 @@ HRESULT WINAPI CFSFolder::GetDetailsOf(PCUITEMID_CHILD pidl,
     else
     {
         hr = S_OK;
-        psd->str.uType = STRRET_CSTR;
+        psd->str.uType = STRRET_WSTR;
+        psd->str.pOleStr = (LPWSTR)CoTaskMemAlloc(MAX_PATH * sizeof(WCHAR));
         /* the data from the pidl */
         switch (iColumn)
         {
@@ -1612,19 +1607,19 @@ HRESULT WINAPI CFSFolder::GetDetailsOf(PCUITEMID_CHILD pidl,
                 hr = GetDisplayNameOf (pidl, SHGDN_NORMAL | SHGDN_INFOLDER, &psd->str);
                 break;
             case SHFSF_COL_SIZE:
-                _ILGetFileSize(pidl, psd->str.cStr, MAX_PATH);
+                _ILGetFileSize(pidl, psd->str.pOleStr, MAX_PATH);
                 break;
             case SHFSF_COL_TYPE:
-                _ILGetFileType(pidl, psd->str.cStr, MAX_PATH);
+                _ILGetFileType(pidl, psd->str.pOleStr, MAX_PATH);
                 break;
             case SHFSF_COL_MDATE:
-                _ILGetFileDate(pidl, psd->str.cStr, MAX_PATH);
+                _ILGetFileDate(pidl, psd->str.pOleStr, MAX_PATH);
                 break;
             case SHFSF_COL_FATTS:
-                _ILGetFileAttributes(pidl, psd->str.cStr, MAX_PATH);
+                _ILGetFileAttributes(pidl, psd->str.pOleStr, MAX_PATH);
                 break;
             case SHFSF_COL_COMMENT:
-                psd->str.cStr[0] = '\0'; // TODO: Extract comment from .lnk files? desktop.ini?
+                psd->str.pOleStr[0] = UNICODE_NULL; // TODO: Extract comment from .lnk files? desktop.ini?
                 break;
 #if DBG
             default:
